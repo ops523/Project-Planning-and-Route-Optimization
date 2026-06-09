@@ -21,11 +21,10 @@ def load_cache():
 
     return pd.DataFrame(
         columns=[
-            "Branch",
-            "Pincode",
+            "Address",
             "Latitude",
             "Longitude",
-            "Display_Name"
+            "Matched_Location"
         ]
     )
 
@@ -44,7 +43,7 @@ def save_cache(cache_df):
 # Nominatim Search
 # --------------------------------------------------
 
-def nominatim_search(query):
+def nominatim_search(address):
 
     url = "https://nominatim.openstreetmap.org/search"
 
@@ -53,9 +52,9 @@ def nominatim_search(query):
     }
 
     params = {
-        "q": query,
+        "q": address,
         "format": "jsonv2",
-        "limit": 5,
+        "limit": 1,
         "addressdetails": 1
     }
 
@@ -69,126 +68,25 @@ def nominatim_search(query):
         )
 
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+
+            if len(data) > 0:
+
+                return {
+
+                    "Latitude":
+                        float(data[0]["lat"]),
+
+                    "Longitude":
+                        float(data[0]["lon"]),
+
+                    "Matched_Location":
+                        data[0]["display_name"]
+                }
 
     except Exception as e:
+
         print(e)
-
-    return []
-
-
-# --------------------------------------------------
-# Validation
-# --------------------------------------------------
-
-def is_au_bank_result(result):
-
-    display_name = str(
-        result.get("display_name", "")
-    ).lower()
-
-    keywords = [
-        "au small finance bank",
-        "au bank",
-        "au finance bank"
-    ]
-
-    return any(
-        k in display_name
-        for k in keywords
-    )
-
-
-def pincode_matches(
-    result,
-    target_pincode
-):
-
-    if not target_pincode:
-        return True
-
-    display_name = str(
-        result.get("display_name", "")
-    )
-
-    return str(target_pincode) in display_name
-
-
-def find_best_result(
-    results,
-    pincode
-):
-
-    for result in results:
-
-        if (
-            is_au_bank_result(result)
-            and
-            pincode_matches(
-                result,
-                pincode
-            )
-        ):
-            return result
-
-    for result in results:
-
-        if is_au_bank_result(result):
-            return result
-
-    return None
-
-
-# --------------------------------------------------
-# Branch Search
-# --------------------------------------------------
-
-def geocode_branch(
-    branch,
-    pincode,
-    city,
-    state
-):
-
-    queries = [
-
-        f"AU Small Finance Bank {branch} {pincode} India",
-
-        f"AU Small Finance Bank {city} {pincode} India",
-
-        f"AU Bank {branch} {city} India",
-
-        f"AU Bank {city} {state} India",
-
-        f"{pincode} {city} {state} India"
-    ]
-
-    for query in queries:
-
-        results = nominatim_search(
-            query
-        )
-
-        best = find_best_result(
-            results,
-            pincode
-        )
-
-        if best:
-
-            return {
-
-                "Latitude":
-                    float(best["lat"]),
-
-                "Longitude":
-                    float(best["lon"]),
-
-                "Display_Name":
-                    best["display_name"]
-            }
-
-        time.sleep(1.1)
 
     return {
 
@@ -196,7 +94,7 @@ def geocode_branch(
 
         "Longitude": None,
 
-        "Display_Name": "NOT FOUND"
+        "Matched_Location": "NOT FOUND"
     }
 
 
@@ -221,65 +119,63 @@ def geocode_dataframe(
 
     for index, row in df.iterrows():
 
-        branch = str(
-            row["Branch"]
+        address = str(
+            row["Address"]
         ).strip()
 
-        pincode = str(
-            row["Pincode"]
-        ).strip()
-
-        city = str(
-            row["City"]
-        ).strip()
-
-        state = str(
-            row["State"]
-        ).strip()
+        # ----------------------------------
+        # Check Cache
+        # ----------------------------------
 
         cached = cache_df[
-            (
-                cache_df["Branch"]
-                ==
-                branch
-            )
-            &
-            (
-                cache_df["Pincode"]
-                .astype(str)
-                ==
-                pincode
-            )
+            cache_df["Address"]
+            ==
+            address
         ]
 
         if len(cached) > 0:
 
             lat = cached.iloc[0]["Latitude"]
+
             lon = cached.iloc[0]["Longitude"]
-            display = cached.iloc[0]["Display_Name"]
+
+            matched = cached.iloc[0][
+                "Matched_Location"
+            ]
 
         else:
 
-            result = geocode_branch(
-                branch,
-                pincode,
-                city,
-                state
+            result = nominatim_search(
+                address
             )
 
             lat = result["Latitude"]
+
             lon = result["Longitude"]
-            display = result["Display_Name"]
+
+            matched = result[
+                "Matched_Location"
+            ]
 
             cache_df.loc[
                 len(cache_df)
             ] = [
-                branch,
-                pincode,
+
+                address,
+
                 lat,
+
                 lon,
-                display
+
+                matched
             ]
+
+            # Respect Nominatim Rate Limit
+            time.sleep(1)
+
+        # ----------------------------------
+        # Stats
+        # ----------------------------------
 
         if lat is not None:
             found_count += 1
@@ -288,24 +184,22 @@ def geocode_dataframe(
 
         results.append({
 
-            "Branch": branch,
+            "Address":
+                address,
 
-            "Pincode": pincode,
+            "Latitude":
+                lat,
 
-            "City": city,
+            "Longitude":
+                lon,
 
-            "State": state,
-
-            "Latitude": lat,
-
-            "Longitude": lon,
-
-            "Matched_Location": display
+            "Matched_Location":
+                matched
         })
 
-        # -------------------------
-        # Progress Update
-        # -------------------------
+        # ----------------------------------
+        # Progress
+        # ----------------------------------
 
         percent = (
             index + 1
@@ -322,18 +216,22 @@ def geocode_dataframe(
 
             status_text.markdown(
                 f"""
-### Processing
+### Geocoding Progress
 
-**Branch:** {branch}
-
-**Progress:** {index+1}/{total}
+**Processed:** {index+1}/{total}
 
 ✅ Found: {found_count}
 
 ❌ Not Found: {not_found_count}
+
+**Current Address:**
+
+{address[:120]}...
 """
             )
 
     save_cache(cache_df)
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(
+        results
+    )
