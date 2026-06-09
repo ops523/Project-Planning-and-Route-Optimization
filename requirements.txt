@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+openpyxl
+scikit-learn
+googlemaps
+ortools
+folium
+streamlit-folium
+xlsxwriter
