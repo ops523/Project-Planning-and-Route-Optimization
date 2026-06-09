@@ -1,17 +1,42 @@
-import streamlit as st
 import pandas as pd
 import requests
 import time
-from io import BytesIO
+import os
 
-st.set_page_config(
-    page_title="AU Bank Branch Geocoder",
-    layout="wide"
-)
+CACHE_FILE = "cache/coordinates_cache.xlsx"
 
-st.title("🏦 AU Bank Branch Geocoder")
+USER_AGENT = "bank-route-planner/1.0"
 
-USER_AGENT = "adwallz-bank-route-planner/1.0"
+
+# --------------------------------------------------
+# Cache Functions
+# --------------------------------------------------
+
+def load_cache():
+
+    if os.path.exists(CACHE_FILE):
+        return pd.read_excel(CACHE_FILE)
+
+    return pd.DataFrame(
+        columns=[
+            "Branch",
+            "Pincode",
+            "Latitude",
+            "Longitude",
+            "Display_Name"
+        ]
+    )
+
+
+def save_cache(cache_df):
+
+    os.makedirs("cache", exist_ok=True)
+
+    cache_df.to_excel(
+        CACHE_FILE,
+        index=False
+    )
+
 
 # --------------------------------------------------
 # Nominatim Search
@@ -28,11 +53,12 @@ def nominatim_search(query):
     params = {
         "q": query,
         "format": "jsonv2",
-        "limit": 1,
+        "limit": 5,
         "addressdetails": 1
     }
 
     try:
+
         response = requests.get(
             url,
             params=params,
@@ -41,186 +67,251 @@ def nominatim_search(query):
         )
 
         if response.status_code == 200:
-
-            data = response.json()
-
-            if len(data) > 0:
-
-                return {
-                    "lat": float(data[0]["lat"]),
-                    "lon": float(data[0]["lon"]),
-                    "display_name": data[0]["display_name"]
-                }
+            return response.json()
 
     except Exception as e:
         print(e)
+
+    return []
+
+
+# --------------------------------------------------
+# AU Bank Validation
+# --------------------------------------------------
+
+def is_au_bank_result(result):
+
+    display_name = str(
+        result.get("display_name", "")
+    ).lower()
+
+    valid_keywords = [
+
+        "au small finance bank",
+
+        "au bank",
+
+        "au finance bank"
+    ]
+
+    return any(
+        keyword in display_name
+        for keyword in valid_keywords
+    )
+
+
+# --------------------------------------------------
+# Pincode Validation
+# --------------------------------------------------
+
+def pincode_matches(result, target_pincode):
+
+    if not target_pincode:
+        return True
+
+    display_name = str(
+        result.get("display_name", "")
+    )
+
+    return str(target_pincode) in display_name
+
+
+# --------------------------------------------------
+# Select Best AU Result
+# --------------------------------------------------
+
+def find_best_result(results, pincode):
+
+    # Priority 1:
+    # AU Bank + Pincode Match
+
+    for result in results:
+
+        if (
+            is_au_bank_result(result)
+            and
+            pincode_matches(
+                result,
+                pincode
+            )
+        ):
+            return result
+
+    # Priority 2:
+    # AU Bank Only
+
+    for result in results:
+
+        if is_au_bank_result(result):
+            return result
 
     return None
 
 
 # --------------------------------------------------
-# Multi-stage search
+# Multi-stage Search
 # --------------------------------------------------
 
-def geocode_branch(branch, pincode, city, state):
+def geocode_branch(
+    branch,
+    pincode,
+    city,
+    state
+):
 
-    searches = [
+    search_queries = [
 
         f"AU Small Finance Bank {branch} {pincode} India",
 
         f"AU Small Finance Bank {city} {pincode} India",
 
-        f"AU Bank {city} {state} India",
+        f"AU Bank {branch} {city} India",
 
-        f"{pincode} {city} {state} India"
+        f"AU Bank {city} {state} India"
     ]
 
-    for q in searches:
+    for query in search_queries:
 
-        result = nominatim_search(q)
+        results = nominatim_search(
+            query
+        )
 
-        if result:
-            return result
+        best = find_best_result(
+            results,
+            pincode
+        )
 
-        # Nominatim usage policy
+        if best:
+
+            return {
+
+                "Latitude":
+                    float(best["lat"]),
+
+                "Longitude":
+                    float(best["lon"]),
+
+                "Display_Name":
+                    best["display_name"]
+            }
+
+        # Respect Nominatim policy
         time.sleep(1.1)
 
-    return None
+    return {
+
+        "Latitude": None,
+
+        "Longitude": None,
+
+        "Display_Name": "NOT FOUND"
+    }
 
 
 # --------------------------------------------------
-# Cache
+# Main Geocoder
 # --------------------------------------------------
 
-CACHE_FILE = "coordinate_cache.xlsx"
+def geocode_dataframe(df):
 
-try:
-    cache_df = pd.read_excel(CACHE_FILE)
+    cache_df = load_cache()
 
-except:
-    cache_df = pd.DataFrame(
-        columns=[
-            "Branch",
-            "Pincode",
-            "Latitude",
-            "Longitude",
-            "Display_Name"
+    results = []
+
+    total = len(df)
+
+    for index, row in df.iterrows():
+
+        branch = str(
+            row["Branch"]
+        ).strip()
+
+        pincode = str(
+            row["Pincode"]
+        ).strip()
+
+        city = str(
+            row["City"]
+        ).strip()
+
+        state = str(
+            row["State"]
+        ).strip()
+
+        cached = cache_df[
+            (
+                cache_df["Branch"]
+                ==
+                branch
+            )
+            &
+            (
+                cache_df["Pincode"]
+                .astype(str)
+                ==
+                pincode
+            )
         ]
-    )
 
+        if len(cached) > 0:
 
-# --------------------------------------------------
-# Upload
-# --------------------------------------------------
+            lat = cached.iloc[0]["Latitude"]
 
-uploaded = st.file_uploader(
-    "Upload Branch Excel",
-    type=["xlsx"]
-)
+            lon = cached.iloc[0]["Longitude"]
 
-if uploaded:
+            display = cached.iloc[0]["Display_Name"]
 
-    df = pd.read_excel(uploaded)
+        else:
 
-    st.write("Preview")
-    st.dataframe(df.head())
-
-    if st.button("Start Geocoding"):
-
-        results = []
-
-        progress = st.progress(0)
-
-        total = len(df)
-
-        for idx, row in df.iterrows():
-
-            branch = str(row["Branch"])
-            pincode = str(row["Pincode"])
-            city = str(row["City"])
-            state = str(row["State"])
-
-            cached = cache_df[
-                (cache_df["Branch"] == branch)
-                &
-                (cache_df["Pincode"].astype(str) == pincode)
-            ]
-
-            if len(cached) > 0:
-
-                lat = cached.iloc[0]["Latitude"]
-                lon = cached.iloc[0]["Longitude"]
-                disp = cached.iloc[0]["Display_Name"]
-
-            else:
-
-                result = geocode_branch(
-                    branch,
-                    pincode,
-                    city,
-                    state
-                )
-
-                if result:
-
-                    lat = result["lat"]
-                    lon = result["lon"]
-                    disp = result["display_name"]
-
-                    cache_df.loc[len(cache_df)] = [
-                        branch,
-                        pincode,
-                        lat,
-                        lon,
-                        disp
-                    ]
-
-                else:
-
-                    lat = None
-                    lon = None
-                    disp = "NOT FOUND"
-
-            results.append({
-                "Branch": branch,
-                "Pincode": pincode,
-                "City": city,
-                "State": state,
-                "Latitude": lat,
-                "Longitude": lon,
-                "Location": disp
-            })
-
-            progress.progress((idx + 1) / total)
-
-        output_df = pd.DataFrame(results)
-
-        # save cache
-        cache_df.to_excel(
-            CACHE_FILE,
-            index=False
-        )
-
-        st.success("Completed")
-
-        st.dataframe(output_df)
-
-        output = BytesIO()
-
-        with pd.ExcelWriter(
-            output,
-            engine="xlsxwriter"
-        ) as writer:
-
-            output_df.to_excel(
-                writer,
-                sheet_name="Coordinates",
-                index=False
+            result = geocode_branch(
+                branch,
+                pincode,
+                city,
+                state
             )
 
-        st.download_button(
-            "Download Coordinates",
-            output.getvalue(),
-            file_name="au_bank_coordinates.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            lat = result["Latitude"]
+
+            lon = result["Longitude"]
+
+            display = result["Display_Name"]
+
+            cache_df.loc[
+                len(cache_df)
+            ] = [
+
+                branch,
+
+                pincode,
+
+                lat,
+
+                lon,
+
+                display
+            ]
+
+        results.append({
+
+            "Branch": branch,
+
+            "Pincode": pincode,
+
+            "City": city,
+
+            "State": state,
+
+            "Latitude": lat,
+
+            "Longitude": lon,
+
+            "Matched_Location": display
+        })
+
+        print(
+            f"{index+1}/{total} : {branch}"
         )
+
+    save_cache(cache_df)
+
+    return pd.DataFrame(results)
