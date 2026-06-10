@@ -2,10 +2,11 @@ import pandas as pd
 import requests
 import time
 import os
+import re
 
 CACHE_FILE = "cache/coordinates_cache.xlsx"
 
-USER_AGENT = "AdwallzBankPlanner/1.0"
+USER_AGENT = "AdwallzBankPlanner/1.0 (contact@adwallz.com)"
 
 
 # --------------------------------------------------
@@ -40,19 +41,54 @@ def save_cache(cache_df):
 
 
 # --------------------------------------------------
+# Address Cleaning
+# --------------------------------------------------
+
+def clean_address(address):
+
+    address = str(address)
+
+    address = address.replace("\n", " ")
+    address = address.replace("#", " ")
+    address = address.replace("-", " ")
+    address = address.replace("|", " ")
+
+    address = re.sub(r"\s+", " ", address)
+
+    return address.strip()
+
+
+# --------------------------------------------------
+# Extract Pincode
+# --------------------------------------------------
+
+def extract_pincode(address):
+
+    match = re.search(
+        r"\b\d{6}\b",
+        str(address)
+    )
+
+    if match:
+        return match.group()
+
+    return None
+
+
+# --------------------------------------------------
 # Nominatim Search
 # --------------------------------------------------
 
-def nominatim_search(address):
+def nominatim_query(query):
 
     url = "https://nominatim.openstreetmap.org/search"
 
     headers = {
-        "User-Agent": "AdwallzBankPlanner/1.0 (contact@yourdomain.com)"
+        "User-Agent": USER_AGENT
     }
 
     params = {
-        "q": address,
+        "q": query,
         "format": "jsonv2",
         "limit": 1,
         "addressdetails": 1
@@ -67,46 +103,82 @@ def nominatim_search(address):
             timeout=30
         )
 
-        print("=" * 80)
-        print("SEARCH:", address[:150])
-        print("STATUS:", response.status_code)
-        print("URL:", response.url)
-
         if response.status_code != 200:
-            print("RESPONSE:", response.text[:500])
-            return {
-                "Latitude": None,
-                "Longitude": None,
-                "Matched_Location": f"HTTP {response.status_code}"
-            }
+
+            return None
 
         data = response.json()
 
-        print("RESULT COUNT:", len(data))
+        if len(data) == 0:
 
-        if len(data) > 0:
-
-            return {
-                "Latitude": float(data[0]["lat"]),
-                "Longitude": float(data[0]["lon"]),
-                "Matched_Location": data[0]["display_name"]
-            }
+            return None
 
         return {
-            "Latitude": None,
-            "Longitude": None,
-            "Matched_Location": "NO RESULT"
+
+            "Latitude":
+                float(data[0]["lat"]),
+
+            "Longitude":
+                float(data[0]["lon"]),
+
+            "Matched_Location":
+                data[0]["display_name"]
         }
 
-    except Exception as e:
+    except Exception:
 
-        print("ERROR:", str(e))
+        return None
 
-        return {
-            "Latitude": None,
-            "Longitude": None,
-            "Matched_Location": str(e)
-        }
+
+# --------------------------------------------------
+# Search Logic
+# --------------------------------------------------
+
+def geocode_address(address):
+
+    cleaned = clean_address(address)
+
+    pincode = extract_pincode(cleaned)
+
+    queries = []
+
+    # Priority 1
+    if pincode:
+        queries.append(
+            f"{pincode} India"
+        )
+
+    # Priority 2
+    queries.append(cleaned)
+
+    # Priority 3
+    parts = cleaned.split(",")
+
+    if len(parts) >= 3:
+
+        queries.append(
+            ",".join(parts[-3:])
+        )
+
+    # Try all searches
+    for query in queries:
+
+        result = nominatim_query(query)
+
+        if result:
+
+            return result
+
+        time.sleep(1)
+
+    return {
+
+        "Latitude": None,
+
+        "Longitude": None,
+
+        "Matched_Location": "NO RESULT"
+    }
 
 
 # --------------------------------------------------
@@ -134,10 +206,6 @@ def geocode_dataframe(
             row["Address"]
         ).strip()
 
-        # ----------------------------------
-        # Check Cache
-        # ----------------------------------
-
         cached = cache_df[
             cache_df["Address"]
             ==
@@ -156,7 +224,7 @@ def geocode_dataframe(
 
         else:
 
-            result = nominatim_search(
+            result = geocode_address(
                 address
             )
 
@@ -181,16 +249,12 @@ def geocode_dataframe(
                 matched
             ]
 
-            # Respect Nominatim Rate Limit
-            time.sleep(1)
+        if pd.notna(lat):
 
-        # ----------------------------------
-        # Stats
-        # ----------------------------------
-
-        if lat is not None:
             found_count += 1
+
         else:
+
             not_found_count += 1
 
         results.append({
@@ -208,10 +272,7 @@ def geocode_dataframe(
                 matched
         })
 
-        # ----------------------------------
-        # Progress
-        # ----------------------------------
-
+        # Progress Bar
         percent = (
             index + 1
         ) / total
@@ -229,20 +290,18 @@ def geocode_dataframe(
                 f"""
 ### Geocoding Progress
 
-**Processed:** {index+1}/{total}
+Processed: **{index+1}/{total}**
 
-✅ Found: {found_count}
+✅ Found: **{found_count}**
 
-❌ Not Found: {not_found_count}
+❌ Not Found: **{not_found_count}**
 
-**Current Address:**
+Current Address:
 
-{address[:120]}...
+{address[:150]}
 """
             )
 
     save_cache(cache_df)
 
-    return pd.DataFrame(
-        results
-    )
+    return pd.DataFrame(results)
