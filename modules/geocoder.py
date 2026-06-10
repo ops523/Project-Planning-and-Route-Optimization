@@ -48,7 +48,7 @@ def nominatim_search(address):
     url = "https://nominatim.openstreetmap.org/search"
 
     headers = {
-        "User-Agent": USER_AGENT
+        "User-Agent": "AdwallzBankPlanner/1.0 (contact@yourdomain.com)"
     }
 
     params = {
@@ -67,35 +67,46 @@ def nominatim_search(address):
             timeout=30
         )
 
-        if response.status_code == 200:
-            data = response.json()
+        print("=" * 80)
+        print("SEARCH:", address[:150])
+        print("STATUS:", response.status_code)
+        print("URL:", response.url)
 
-            if len(data) > 0:
+        if response.status_code != 200:
+            print("RESPONSE:", response.text[:500])
+            return {
+                "Latitude": None,
+                "Longitude": None,
+                "Matched_Location": f"HTTP {response.status_code}"
+            }
 
-                return {
+        data = response.json()
 
-                    "Latitude":
-                        float(data[0]["lat"]),
+        print("RESULT COUNT:", len(data))
 
-                    "Longitude":
-                        float(data[0]["lon"]),
+        if len(data) > 0:
 
-                    "Matched_Location":
-                        data[0]["display_name"]
-                }
+            return {
+                "Latitude": float(data[0]["lat"]),
+                "Longitude": float(data[0]["lon"]),
+                "Matched_Location": data[0]["display_name"]
+            }
+
+        return {
+            "Latitude": None,
+            "Longitude": None,
+            "Matched_Location": "NO RESULT"
+        }
 
     except Exception as e:
 
-        print(e)
+        print("ERROR:", str(e))
 
-    return {
-
-        "Latitude": None,
-
-        "Longitude": None,
-
-        "Matched_Location": "NOT FOUND"
-    }
+        return {
+            "Latitude": None,
+            "Longitude": None,
+            "Matched_Location": str(e)
+        }
 
 
 # --------------------------------------------------
