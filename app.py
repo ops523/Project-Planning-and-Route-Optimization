@@ -2,9 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-from modules.geocoder import (
-    geocode_dataframe
-)
+from modules.geocoder import geocode_dataframe
 
 st.set_page_config(
     page_title="AU Bank Geocoder",
@@ -16,7 +14,7 @@ st.title(
 )
 
 uploaded_file = st.file_uploader(
-    "Upload Excel",
+    "Upload Excel File",
     type=["xlsx"]
 )
 
@@ -63,7 +61,7 @@ if uploaded_file:
         )
 
         st.success(
-            "Geocoding Completed"
+            "Geocoding Complete"
         )
 
         found = result_df[
@@ -112,7 +110,7 @@ if uploaded_file:
 
         st.download_button(
             "📥 Download Coordinates",
-            data=output.getvalue(),
-            file_name="au_bank_coordinates.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            output.getvalue(),
+            "au_bank_coordinates.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
